@@ -64,7 +64,14 @@
 
         // --- 1. CONFIG FIREBASE ANDA ---
         // Ganti null dengan config dari konsol Firebase Anda agar database cloud aktif secara permanen di Vercel:
-        const MY_FIREBASE_CONFIG = null;
+        const MY_FIREBASE_CONFIG = {
+              apiKey: "AIzaSyC7_kfqIm8OTzwqgnCzFSpfjYMETFtwDEU",
+              authDomain: "difam-5c124.firebaseapp.com",
+              projectId: "difam-5c124",
+              storageBucket: "difam-5c124.firebasestorage.app",
+              messagingSenderId: "41833181587",
+              appId: "1:41833181587:web:6492096dd7e21ae581f866"
+            };
 
         // --- DATA AWAL SEBAGAI FALLBACK (Jika Cloud Kosong / Offline) ---
         const initialProfile = {
