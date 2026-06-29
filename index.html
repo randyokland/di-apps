@@ -26,6 +26,20 @@
                         primary: '#4f46e5',
                         secondary: '#10b981',
                         dark: '#1e293b'
+                    },
+                    animation: {
+                        fadeIn: 'fadeIn 0.3s ease-out forwards',
+                        scaleIn: 'scaleIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+                    },
+                    keyframes: {
+                        fadeIn: {
+                            '0%': { opacity: '0', transform: 'translateY(10px)' },
+                            '100%': { opacity: '1', transform: 'translateY(0)' }
+                        },
+                        scaleIn: {
+                            '0%': { opacity: '0', transform: 'scale(0.95)' },
+                            '100%': { opacity: '1', transform: 'scale(1)' }
+                        }
                     }
                 }
             }
@@ -38,7 +52,8 @@
         ::-webkit-scrollbar-thumb { background: #c5c5c5; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
         
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; overflow-x: hidden; }
+        .animate-fadeIn { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
     </style>
 </head>
 <body>
@@ -49,14 +64,7 @@
 
         // --- 1. CONFIG FIREBASE ANDA ---
         // Ganti null dengan config dari konsol Firebase Anda agar database cloud aktif secara permanen di Vercel:
-        const MY_FIREBASE_CONFIG = {
-  apiKey: "AIzaSyC7_kfqIm8OTzwqgnCzFSpfjYMETFtwDEU",
-  authDomain: "difam-5c124.firebaseapp.com",
-  projectId: "difam-5c124",
-  storageBucket: "difam-5c124.firebasestorage.app",
-  messagingSenderId: "41833181587",
-  appId: "1:41833181587:web:6492096dd7e21ae581f866"
-};
+        const MY_FIREBASE_CONFIG = null;
 
         // --- DATA AWAL SEBAGAI FALLBACK (Jika Cloud Kosong / Offline) ---
         const initialProfile = {
@@ -65,7 +73,14 @@
             bio: "Saya adalah pengembang web independen yang berfokus pada pembuatan aplikasi web ringan, cepat, dan responsif (Single File HTML). Saya memiliki pengalaman lebih dari 5 tahun dalam dunia web development.",
             skills: "HTML, CSS, JavaScript, React, Tailwind",
             email: "di-fam.dev@example.com",
-            waNumber: "6289695567267" 
+            waNumber: "6289695567267",
+            avatar: "", // Akan diisi base64 hasil kompresi
+            favicon: "", // Akan diisi base64 hasil kompresi
+            socialLinks: [
+                { id: "1", name: "Facebook", url: "https://facebook.com", icon: "fa-brands fa-facebook" },
+                { id: "2", name: "Discord", url: "https://discord.com", icon: "fa-brands fa-discord" },
+                { id: "3", name: "GitHub", url: "https://github.com", icon: "fa-brands fa-github" }
+            ]
         };
 
         const sampleHtmlApp = `<!DOCTYPE html>
@@ -91,9 +106,44 @@
                 title: "Aplikasi Kasir Mini HTML",
                 description: "Aplikasi kasir ringan tanpa database, cocok untuk warung kecil. Sepenuhnya berjalan di browser.",
                 price: "150000",
-                code: sampleHtmlApp
+                code: sampleHtmlApp,
+                thumbnail: "" // Base64 hasil kompresi
             }
         ];
+
+        // --- UTILITAS: KOMPRESI GAMBAR (HEMAT STORAGE) ---
+        const compressImage = (file, maxWidth, maxHeight, callback) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = (event) => {
+                const img = new Image();
+                img.src = event.target.result;
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > height) {
+                        if (width > maxWidth) {
+                            height *= maxWidth / width;
+                            width = maxWidth;
+                        }
+                    } else {
+                        if (height > maxHeight) {
+                            width *= maxHeight / height;
+                            height = maxHeight;
+                        }
+                    }
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    // Gunakan kualitas 0.7 JPEG untuk ukuran dokumen database yang sangat efisien
+                    const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
+                    callback(compressedDataUrl);
+                };
+            };
+        };
 
         // --- KOMPONEN UTAMA ---
         function App() {
@@ -119,7 +169,7 @@
             const [loginStatus, setLoginStatus] = useState({ error: '', success: '' });
             const [customAlert, setCustomAlert] = useState(null); // { message, isConfirm, onConfirm }
 
-            // Menentukan apakah user yang login saat ini adalah Admin asli (Non-anonim)
+            // Menentukan apakah user yang login saat ini adalah Admin asli
             const isOwner = user && !user.isAnonymous;
 
             // Trigger Dialog Kustom
@@ -160,10 +210,15 @@
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                             await signInWithCustomToken(auth, __initial_auth_token);
                         } else {
-                            // Cek jika session auth sebelumnya masih ada (agar login admin persisten saat refresh)
                             onAuthStateChanged(auth, async (u) => {
                                 if (!u) {
-                                    await signInAnonymously(auth);
+                                    try {
+                                        await signInAnonymously(auth);
+                                    } catch (anonError) {
+                                        console.error("Anonymous Auth Error:", anonError);
+                                        setDbInitError("Penting: Metode Sign-in 'Anonymous' (Anonim) belum diaktifkan di Firebase Console Anda.");
+                                        setLoading(false);
+                                    }
                                 } else {
                                     setUser(u);
                                 }
@@ -176,6 +231,19 @@
                     }
                 };
                 initFirebase();
+
+                // Timeout darurat jika loading terus lebih dari 8 detik
+                const emergencyTimeout = setTimeout(() => {
+                    setLoading(prev => {
+                        if (prev) {
+                            setDbInitError("Koneksi ke database terputus atau pengaturan Firebase belum lengkap.");
+                            return false;
+                        }
+                        return prev;
+                    });
+                }, 8000);
+
+                return () => clearTimeout(emergencyTimeout);
             }, []);
 
             // Ambil Data dari Firestore secara Realtime
@@ -201,14 +269,17 @@
                     collection(db, 'artifacts', appId, 'public', 'data', 'profileData'),
                     (snapshot) => {
                         if (snapshot.empty) {
-                            // Masukkan data default jika database benar-benar kosong pertama kali
                             setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profileData', 'main'), initialProfile);
                         } else {
                             setProfile(snapshot.docs[0].data());
                         }
                         profileReady = true; checkReady();
                     },
-                    (error) => { console.error("Profile sync error:", error); profileReady = true; checkReady(); }
+                    (error) => { 
+                        console.error("Profile sync error:", error); 
+                        setDbInitError("Gagal membaca profil. Pastikan Aturan Keamanan (Rules) Firestore sudah di-set ke 'allow read: if true;'.");
+                        profileReady = true; checkReady(); 
+                    }
                 );
 
                 // Listener Produk
@@ -224,7 +295,11 @@
                         }
                         productsReady = true; checkReady();
                     },
-                    (error) => { console.error("Products sync error:", error); productsReady = true; checkReady(); }
+                    (error) => { 
+                        console.error("Products sync error:", error); 
+                        setDbInitError("Gagal membaca produk. Pastikan Aturan Keamanan (Rules) Firestore sudah diatur.");
+                        productsReady = true; checkReady(); 
+                    }
                 );
 
                 return () => {
@@ -232,6 +307,19 @@
                     unsubProducts();
                 };
             }, [user, fb, dbInitError]);
+
+            // Efek untuk update favicon dinamis
+            useEffect(() => {
+                if (profile && profile.favicon) {
+                    let link = document.querySelector("link[rel~='icon']");
+                    if (!link) {
+                        link = document.createElement('link');
+                        link.rel = 'icon';
+                        document.getElementsByTagName('head')[0].appendChild(link);
+                    }
+                    link.href = profile.favicon;
+                }
+            }, [profile]);
 
             // Handler Simpan Profil
             const saveProfileToCloud = async (newProfile) => {
@@ -260,7 +348,7 @@
                 setLoginStatus({ error: '', success: '' });
                 
                 try {
-                    if (dbInitError) {
+                    if (dbInitError && dbInitError.includes("Konfigurasi")) {
                         throw new Error(`Database tidak terhubung:\n${dbInitError}`);
                     }
                     if (!fb) {
@@ -284,7 +372,7 @@
                 }
             };
 
-            // Handler Logout Admin (Kembali ke status Guest Anonim)
+            // Handler Logout Admin
             const handleAdminLogout = async () => {
                 if (!fb) return;
                 const { auth, signOut } = fb;
@@ -293,7 +381,7 @@
                 triggerAlert("Anda telah keluar dari mode administrasi secara aman.");
             };
 
-            // Klik Rahasia di Footer (5 kali klik untuk memunculkan formulir login)
+            // Klik Rahasia di Footer (5 kali klik untuk login)
             const handleSecretClick = () => {
                 const nextCount = claimCount + 1;
                 setClaimCount(nextCount);
@@ -328,11 +416,11 @@
 
             return (
                 <div className="min-h-screen flex flex-col">
-                    {/* BANNER NOTIFIKASI DEMO */}
+                    {/* BANNER NOTIFIKASI ERROR/DEMO */}
                     {dbInitError && (
-                        <div className="bg-yellow-500 text-white text-xs py-2 px-4 text-center font-semibold flex items-center justify-center gap-2">
+                        <div className="bg-red-500 text-white text-xs py-2 px-4 text-center font-semibold flex items-center justify-center gap-2">
                             <i className="fa-solid fa-triangle-exclamation"></i>
-                            <span>Aplikasi berjalan dalam Mode Offline. Masukkan Firebase Config Anda di variabel 'MY_FIREBASE_CONFIG' untuk mengaktifkan Cloud Database.</span>
+                            <span>Mode Offline Aktif: {dbInitError.includes("Konfigurasi Firebase tidak ditemukan") ? "Masukkan Firebase Config Anda di variabel 'MY_FIREBASE_CONFIG'." : dbInitError}</span>
                         </div>
                     )}
 
@@ -341,23 +429,27 @@
                         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                             <div className="flex justify-between h-16">
                                 <div className="flex items-center">
-                                    <span className="text-xl font-bold text-primary cursor-pointer" onClick={() => navigate('home')}>
-                                        <i className="fa-solid fa-code border-2 border-primary rounded-md p-1 mr-2"></i>
-                                        {profile.name} Portofolio
+                                    <span className="text-xl font-bold text-primary cursor-pointer flex items-center" onClick={() => navigate('home')}>
+                                        {profile.favicon ? (
+                                            <img src={profile.favicon} alt="Favicon" className="w-8 h-8 rounded-md mr-2 object-cover border border-indigo-100" />
+                                        ) : (
+                                            <i className="fa-solid fa-code border-2 border-primary rounded-md p-1 mr-2"></i>
+                                        )}
+                                        {profile.name} <span className="hidden sm:inline-block ml-1 text-gray-500 text-sm font-normal">Store</span>
                                     </span>
                                 </div>
                                 <div className="flex items-center space-x-2 md:space-x-4">
-                                    <button onClick={() => navigate('home')} className={`px-3 py-2 rounded-md text-sm font-medium ${view === 'home' ? 'text-primary bg-indigo-50' : 'text-gray-600 hover:text-primary hover:bg-gray-50'}`}>
+                                    <button onClick={() => navigate('home')} className={`px-3 py-2 rounded-md text-sm font-medium transition ${view === 'home' ? 'text-primary bg-indigo-50' : 'text-gray-600 hover:text-primary hover:bg-gray-50'}`}>
                                         <i className="fa-solid fa-store md:mr-2"></i><span className="hidden md:inline">Produk</span>
                                     </button>
-                                    <button onClick={() => navigate('cv')} className={`px-3 py-2 rounded-md text-sm font-medium ${view === 'cv' ? 'text-primary bg-indigo-50' : 'text-gray-600 hover:text-primary hover:bg-gray-50'}`}>
+                                    <button onClick={() => navigate('cv')} className={`px-3 py-2 rounded-md text-sm font-medium transition ${view === 'cv' ? 'text-primary bg-indigo-50' : 'text-gray-600 hover:text-primary hover:bg-gray-50'}`}>
                                         <i className="fa-solid fa-user-tie md:mr-2"></i><span className="hidden md:inline">Profil CV</span>
                                     </button>
                                     
                                     {/* HANYA TAMPIL JIKA LOGIN SEBAGAI ADMIN RESMI */}
                                     {isOwner && (
-                                        <button onClick={() => navigate('admin')} className={`px-3 py-2 rounded-md text-sm font-medium ${view === 'admin' ? 'bg-dark text-white' : 'text-gray-600 hover:text-dark hover:bg-gray-100'}`}>
-                                            <i className="fa-solid fa-user-shield md:mr-2 text-green-400"></i><span className="hidden md:inline">Panel Admin</span>
+                                        <button onClick={() => navigate('admin')} className={`px-3 py-2 rounded-md text-sm font-medium transition ${view === 'admin' ? 'bg-dark text-white' : 'text-gray-600 hover:text-dark hover:bg-gray-100'}`}>
+                                            <i className="fa-solid fa-user-shield md:mr-2 text-green-400 animate-pulse"></i><span className="hidden md:inline">Panel Admin</span>
                                         </button>
                                     )}
                                 </div>
@@ -365,28 +457,42 @@
                         </div>
                     </nav>
 
-                    {/* AREA KONTEN UTAMA */}
+                    {/* AREA KONTEN UTAMA DENGAN ANIMASI FADE-IN */}
                     <main className="flex-grow">
-                        {view === 'home' && <PublicHome products={products} onSelectProduct={(p) => navigate('productDetail', p)} formatRupiah={formatRupiah} />}
-                        {view === 'cv' && <ProfileView profile={profile} />}
-                        {view === 'productDetail' && <ProductDetail product={activeProduct} onBack={() => navigate('home')} waNumber={profile.waNumber} formatRupiah={formatRupiah} />}
+                        {view === 'home' && (
+                            <div className="animate-fadeIn">
+                                <PublicHome products={products} onSelectProduct={(p) => navigate('productDetail', p)} formatRupiah={formatRupiah} />
+                            </div>
+                        )}
+                        {view === 'cv' && (
+                            <div className="animate-fadeIn">
+                                <ProfileView profile={profile} />
+                            </div>
+                        )}
+                        {view === 'productDetail' && (
+                            <div className="animate-fadeIn">
+                                <ProductDetail product={activeProduct} onBack={() => navigate('home')} waNumber={profile.waNumber} formatRupiah={formatRupiah} />
+                            </div>
+                        )}
                         
-                        {/* Panel Admin aman karena memerlukan isOwner asli */}
+                        {/* Panel Admin */}
                         {view === 'admin' && isOwner && (
-                            <AdminDashboard 
-                                products={products} 
-                                profile={profile} 
-                                onSaveProfile={saveProfileToCloud}
-                                onSaveProduct={saveProductToCloud}
-                                onDeleteProduct={deleteProductFromCloud}
-                                onLogout={handleAdminLogout}
-                                triggerAlert={triggerAlert}
-                            />
+                            <div className="animate-fadeIn">
+                                <AdminDashboard 
+                                    products={products} 
+                                    profile={profile} 
+                                    onSaveProfile={saveProfileToCloud}
+                                    onSaveProduct={saveProductToCloud}
+                                    onDeleteProduct={deleteProductFromCloud}
+                                    onLogout={handleAdminLogout}
+                                    triggerAlert={triggerAlert}
+                                />
+                            </div>
                         )}
                         
                         {/* Proteksi jika diakses secara paksa */}
                         {view === 'admin' && !isOwner && (
-                            <div className="text-center py-20 text-red-500 font-bold text-xl">
+                            <div className="text-center py-20 text-red-500 font-bold text-xl animate-fadeIn">
                                 <i className="fa-solid fa-circle-xmark text-5xl mb-3 block"></i>
                                 Akses Ditolak. Silakan Sign In sebagai Admin melalui pintu masuk rahasia.
                             </div>
@@ -401,17 +507,17 @@
                             <span>•</span>
                             <span 
                                 onClick={handleSecretClick} 
-                                className={`cursor-pointer hover:underline select-none flex items-center gap-1 ${dbInitError ? 'text-yellow-400' : 'text-green-400'}`}
+                                className={`cursor-pointer hover:underline select-none flex items-center gap-1 ${dbInitError ? 'text-red-400' : 'text-green-400'}`}
                                 title="Ketuk 5 kali untuk masuk Admin"
                             >
-                                <i className={`fa-solid ${dbInitError ? 'fa-cloud-slash' : 'fa-cloud'}`}></i> {dbInitError ? 'Local Mode Active' : 'Cloud Sync Active'}
+                                <i className={`fa-solid ${dbInitError ? 'fa-cloud-slash' : 'fa-cloud'}`}></i> {dbInitError ? 'Offline Mode Active' : 'Cloud Sync Active'}
                             </span>
                         </p>
                     </footer>
 
                     {/* --- MODAL DIALOG KUSTOM --- */}
                     {customAlert && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50 animate-fadeIn">
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black bg-opacity-50 animate-fadeIn">
                             <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full border border-gray-100">
                                 <h3 className="text-lg font-bold text-gray-900 mb-3 flex items-center">
                                     <i className="fa-solid fa-circle-info text-primary mr-2 text-xl"></i> Informasi
@@ -421,7 +527,7 @@
                                     {customAlert.isConfirm && (
                                         <button 
                                             onClick={() => { customAlert.onConfirm && customAlert.onConfirm(); setCustomAlert(null); }}
-                                            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition animate-scaleIn"
+                                            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition"
                                         >
                                             Ya, Lanjutkan
                                         </button>
@@ -508,39 +614,44 @@
             );
         }
 
-        // --- TAMPILAN PUBLIK: HOME (Daftar Produk) ---
+        // --- TAMPILAN PUBLIK: HOME (Daftar Produk dengan Thumbnail) ---
         function PublicHome({ products, onSelectProduct, formatRupiah }) {
             return (
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 animate-fadeIn">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
                     <div className="text-center mb-12">
-                        <h1 className="text-3xl md:text-5xl font-extrabold text-gray-900 mb-4">Solusi Web App <span className="text-primary">Sekali Klik</span></h1>
+                        <h1 className="text-3xl md:text-5xl font-extrabold text-gray-900 mb-4 tracking-tight">Solusi Web App <span className="text-primary">Sekali Klik</span></h1>
                         <p className="text-lg text-gray-600 max-w-2xl mx-auto">Kami menyediakan berbagai aplikasi web praktis berbasis single-file HTML. Ringan, cepat, dan siap pakai tanpa perlu setting server yang rumit.</p>
                     </div>
 
                     {products.length === 0 ? (
                         <div className="text-center text-gray-500 py-10">Belum ada produk yang ditampilkan.</div>
                     ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
                             {products.map(product => (
-                                <div key={product.id} className="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-100 hover:shadow-xl transition duration-300 flex flex-col">
-                                    <div className="h-48 bg-gray-100 relative group overflow-hidden">
-                                        {/* Mockup Thumbnail */}
-                                        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-indigo-100 to-blue-50 text-indigo-300">
-                                            <i className="fa-solid fa-laptop-code text-6xl"></i>
-                                        </div>
-                                        <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition duration-300 flex items-center justify-center">
-                                            <button onClick={() => onSelectProduct(product)} className="opacity-0 group-hover:opacity-100 bg-white text-primary font-bold py-2 px-6 rounded-full transform translate-y-4 group-hover:translate-y-0 transition duration-300 shadow-lg">
-                                                Lihat Demo
+                                <div key={product.id} className="bg-white rounded-2xl shadow-sm hover:shadow-xl border border-gray-100 overflow-hidden transition-all duration-300 flex flex-col group">
+                                    <div className="h-48 bg-gray-50 relative overflow-hidden flex items-center justify-center border-b border-gray-50">
+                                        {/* Thumbnail Aplikasi */}
+                                        {product.thumbnail ? (
+                                            <img src={product.thumbnail} alt={product.title} className="w-full h-full object-cover group-hover:scale-105 transition-all duration-500" />
+                                        ) : (
+                                            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-indigo-50 to-blue-50 text-indigo-300">
+                                                <i className="fa-solid fa-laptop-code text-5xl mb-2"></i>
+                                                <span className="text-xs text-indigo-400 font-medium">Demo Web App</span>
+                                            </div>
+                                        )}
+                                        <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition-all duration-300 flex items-center justify-center">
+                                            <button onClick={() => onSelectProduct(product)} className="opacity-0 group-hover:opacity-100 bg-white text-primary font-bold py-2.5 px-6 rounded-full transform translate-y-4 group-hover:translate-y-0 transition-all duration-300 shadow-md hover:bg-primary hover:text-white">
+                                                Lihat Demo & Harga
                                             </button>
                                         </div>
                                     </div>
                                     <div className="p-6 flex-grow flex flex-col">
-                                        <h3 className="text-xl font-bold text-gray-900 mb-2">{product.title}</h3>
-                                        <p className="text-gray-600 text-sm mb-4 flex-grow line-clamp-3">{product.description}</p>
+                                        <h3 className="text-lg font-bold text-gray-900 mb-2 leading-snug group-hover:text-primary transition">{product.title}</h3>
+                                        <p className="text-gray-500 text-sm mb-4 flex-grow line-clamp-3 leading-relaxed">{product.description}</p>
                                         <div className="flex items-center justify-between mt-auto pt-4 border-t border-gray-100">
-                                            <span className="text-lg font-bold text-secondary">{formatRupiah(product.price)}</span>
-                                            <button onClick={() => onSelectProduct(product)} className="text-primary font-medium hover:text-indigo-800 text-sm flex items-center">
-                                                Detail <i className="fa-solid fa-arrow-right ml-1"></i>
+                                            <span className="text-md font-extrabold text-secondary">{formatRupiah(product.price)}</span>
+                                            <button onClick={() => onSelectProduct(product)} className="text-primary font-bold hover:text-indigo-800 text-sm flex items-center gap-1">
+                                                Detail <i className="fa-solid fa-chevron-right text-xs"></i>
                                             </button>
                                         </div>
                                     </div>
@@ -552,83 +663,93 @@
             );
         }
 
-        // --- TAMPILAN PUBLIK: DETAIL & DEMO PRODUK ---
+        // --- TAMPILAN PUBLIK: DETAIL & DEMO PRODUK DENGAN SIMULATOR BINGKAI PERANGKAT ---
         function ProductDetail({ product, onBack, waNumber, formatRupiah }) {
+            const [previewDevice, setPreviewDevice] = useState('desktop'); // desktop, tablet, mobile
             const waMessage = encodeURIComponent(`Halo, saya tertarik dengan produk web app: *${product.title}*. Bisa minta info lebih lanjut?`);
             const waLink = `https://wa.me/${waNumber}?text=${waMessage}`;
 
+            // Helper lebar kelas iframe
+            const getDeviceWidthClass = () => {
+                switch(previewDevice) {
+                    case 'tablet':
+                        return 'max-w-[768px] border-x-[12px] border-t-[12px] border-gray-800 rounded-t-2xl shadow-xl h-full';
+                    case 'mobile':
+                        return 'max-w-[375px] border-x-[10px] border-t-[10px] border-gray-800 rounded-t-2xl shadow-xl h-full';
+                    default:
+                        return 'max-w-full h-full';
+                }
+            };
+
             return (
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 animate-fadeIn">
-                    <button onClick={onBack} className="text-gray-500 hover:text-primary mb-6 flex items-center font-medium">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+                    <button onClick={onBack} className="text-gray-500 hover:text-primary mb-6 flex items-center font-medium transition">
                         <i className="fa-solid fa-arrow-left mr-2"></i> Kembali ke Katalog
                     </button>
 
-                    <div className="bg-white rounded-xl shadow-xl overflow-hidden flex flex-col lg:flex-row border border-gray-100 h-[80vh]">
-                        {/* Area Info */}
-                        <div className="w-full lg:w-1/3 p-6 lg:p-8 bg-gray-50 border-b lg:border-b-0 lg:border-r border-gray-200 flex flex-col overflow-y-auto">
-                            <h2 className="text-2xl lg:text-3xl font-bold text-gray-900 mb-2">{product.title}</h2>
+                    <div className="bg-white rounded-2xl shadow-xl overflow-hidden flex flex-col lg:flex-row border border-gray-100 h-auto lg:h-[80vh]">
+                        {/* Area Info Produk (Sisi Kiri di Desktop, Atas di Mobile) */}
+                        <div className="w-full lg:w-1/3 p-6 lg:p-8 bg-gray-50 border-b lg:border-b-0 lg:border-r border-gray-200 flex flex-col shrink-0">
+                            {product.thumbnail && (
+                                <img src={product.thumbnail} alt={product.title} className="w-full h-32 object-cover rounded-xl mb-4 border shadow-sm hidden lg:block" />
+                            )}
+                            <h2 className="text-2xl lg:text-3xl font-extrabold text-gray-950 mb-2">{product.title}</h2>
                             <div className="text-2xl font-black text-secondary mb-6">{formatRupiah(product.price)}</div>
                             
-                            <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-2">Deskripsi Produk</h4>
-                            <p className="text-gray-700 mb-8 whitespace-pre-wrap flex-grow leading-relaxed">{product.description}</p>
+                            <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Deskripsi Produk</h4>
+                            <p className="text-gray-600 mb-8 whitespace-pre-wrap leading-relaxed overflow-y-auto max-h-[150px] lg:max-h-full flex-grow">{product.description}</p>
                             
-                            <div className="mt-auto pt-6">
-                                <a href={waLink} target="_blank" rel="noopener noreferrer" className="w-full block text-center bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition duration-200 flex items-center justify-center">
-                                    <i className="fa-brands fa-whatsapp text-xl mr-2"></i> Beli via WhatsApp
+                            <div className="mt-auto pt-6 border-t border-gray-200">
+                                <a href={waLink} target="_blank" rel="noopener noreferrer" className="w-full block text-center bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition duration-200 flex items-center justify-center gap-2">
+                                    <i className="fa-brands fa-whatsapp text-xl"></i> Beli via WhatsApp
                                 </a>
-                                <p className="text-xs text-gray-400 text-center mt-3">
-                                    <i className="fa-solid fa-shield-halved mr-1"></i> Transaksi aman langsung dengan kreator
+                                <p className="text-[11px] text-gray-400 text-center mt-3">
+                                    <i className="fa-solid fa-shield-halved mr-1 text-green-500"></i> Hubungi langsung pengembang produk untuk transaksi aman.
                                 </p>
                             </div>
                         </div>
                         
-                        {/* Area Demo Iframe */}
-                        <div className="w-full lg:w-2/3 h-[50vh] lg:h-full bg-white relative">
-                            <div className="absolute top-0 left-0 right-0 bg-gray-800 text-gray-300 text-xs py-2 px-4 flex justify-between items-center z-10">
-                                <span><i className="fa-solid fa-desktop mr-2"></i> Live Preview</span>
-                                <span className="text-gray-500">Berjalan di Sandbox</span>
-                            </div>
-                            <iframe 
-                                srcDoc={product.code} 
-                                className="w-full h-full border-0 pt-8"
-                                sandbox="allow-scripts allow-same-origin allow-forms"
-                                title="Product Demo"
-                            ></iframe>
-                        </div>
-                    </div>
-                </div>
-            );
-        }
-
-        // --- TAMPILAN PUBLIK: PROFIL / CV ---
-        function ProfileView({ profile }) {
-            return (
-                <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12 animate-fadeIn">
-                    <div className="bg-white shadow-xl rounded-2xl overflow-hidden border border-gray-100">
-                        <div className="bg-primary h-32 md:h-48"></div>
-                        <div className="px-6 md:px-12 pb-10 flex flex-col items-center -mt-16 md:-mt-24">
-                            <div className="w-32 h-32 md:w-48 md:h-48 bg-white rounded-full p-2 shadow-lg mb-6 flex items-center justify-center text-primary bg-gray-50 border-4 border-white">
-                                <i className="fa-solid fa-user-astronaut text-6xl md:text-8xl animate-pulse"></i>
-                            </div>
-                            <h1 className="text-3xl md:text-4xl font-bold text-gray-900 text-center">{profile.name}</h1>
-                            <p className="text-lg md:text-xl text-primary font-medium mt-2">{profile.title}</p>
-                            
-                            <div className="flex gap-4 mt-6">
-                                <a href={`mailto:${profile.email}`} className="bg-gray-100 hover:bg-gray-200 text-gray-700 p-3 rounded-full transition"><i className="fa-solid fa-envelope"></i></a>
-                                <a href={`https://wa.me/${profile.waNumber}`} target="_blank" className="bg-green-100 hover:bg-green-200 text-green-700 p-3 rounded-full transition"><i className="fa-brands fa-whatsapp"></i></a>
-                            </div>
-
-                            <div className="w-full border-t border-gray-100 mt-10 pt-10 text-left">
-                                <h3 className="text-xl font-bold text-gray-900 mb-4 border-l-4 border-primary pl-3">Tentang Saya</h3>
-                                <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">{profile.bio}</p>
+                        {/* Area Simulator Demo Iframe (Sisi Kanan di Desktop, Bawah di Mobile) */}
+                        <div className="w-full lg:w-2/3 h-[500px] lg:h-full bg-slate-900 flex flex-col overflow-hidden relative">
+                            {/* Toolbar Simulator */}
+                            <div className="bg-slate-800 text-gray-300 text-xs py-3 px-4 flex flex-col sm:flex-row justify-between items-center gap-2 z-10 border-b border-slate-700">
+                                <span className="font-medium text-slate-400"><i className="fa-solid fa-circle-play text-green-400 mr-2"></i> Live Web Preview</span>
                                 
-                                <h3 className="text-xl font-bold text-gray-900 mb-4 border-l-4 border-primary pl-3 mt-8">Keahlian (Skills)</h3>
-                                <div className="flex flex-wrap gap-2">
-                                    {profile.skills.split(',').map((skill, index) => (
-                                        <span key={index} className="bg-indigo-50 text-indigo-700 border border-indigo-100 px-3 py-1 rounded-full text-sm font-medium">
-                                            {skill.trim()}
-                                        </span>
-                                    ))}
+                                {/* Device Switcher Buttons */}
+                                <div className="bg-slate-950 p-1 rounded-lg flex items-center gap-1">
+                                    <button 
+                                        onClick={() => setPreviewDevice('desktop')}
+                                        className={`px-3 py-1.5 rounded-md flex items-center gap-1 font-semibold transition ${previewDevice === 'desktop' ? 'bg-primary text-white' : 'hover:text-white text-slate-400'}`}
+                                        title="Tampilan Desktop"
+                                    >
+                                        <i className="fa-solid fa-desktop"></i> <span className="hidden xs:inline">Desktop</span>
+                                    </button>
+                                    <button 
+                                        onClick={() => setPreviewDevice('tablet')}
+                                        className={`px-3 py-1.5 rounded-md flex items-center gap-1 font-semibold transition ${previewDevice === 'tablet' ? 'bg-primary text-white' : 'hover:text-white text-slate-400'}`}
+                                        title="Tampilan Tablet"
+                                    >
+                                        <i className="fa-solid fa-tablet-screen-button"></i> <span className="hidden xs:inline">Tablet</span>
+                                    </button>
+                                    <button 
+                                        onClick={() => setPreviewDevice('mobile')}
+                                        className={`px-3 py-1.5 rounded-md flex items-center gap-1 font-semibold transition ${previewDevice === 'mobile' ? 'bg-primary text-white' : 'hover:text-white text-slate-400'}`}
+                                        title="Tampilan Mobile"
+                                    >
+                                        <i className="fa-solid fa-mobile-screen-button"></i> <span className="hidden xs:inline">Mobile</span>
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            {/* Workspace Sandbox Iframe */}
+                            <div className="flex-grow flex items-end justify-center bg-slate-950 p-2 sm:p-4 overflow-hidden relative">
+                                <div className={`w-full transition-all duration-300 flex justify-center h-full ${getDeviceWidthClass()}`}>
+                                    <iframe 
+                                        srcDoc={product.code} 
+                                        className="w-full h-full border-0 bg-white"
+                                        sandbox="allow-scripts allow-same-origin allow-forms"
+                                        title="Live Product Demo"
+                                    ></iframe>
                                 </div>
                             </div>
                         </div>
@@ -637,7 +758,89 @@
             );
         }
 
-        // --- TAMPILAN ADMIN: DASHBOARD & EDITOR ---
+        // --- TAMPILAN PUBLIK: PROFIL / CV DENGAN CUSTOM LINK SOSMED ---
+        function ProfileView({ profile }) {
+            return (
+                <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+                    <div className="bg-white shadow-xl rounded-3xl overflow-hidden border border-gray-100">
+                        <div className="bg-gradient-to-r from-primary to-violet-500 h-32 md:h-48"></div>
+                        <div className="px-6 md:px-12 pb-10 flex flex-col items-center -mt-16 md:-mt-24">
+                            <div className="w-32 h-32 md:w-48 md:h-48 bg-white rounded-full p-2 shadow-xl mb-6 flex items-center justify-center border-4 border-white overflow-hidden shrink-0">
+                                {profile.avatar ? (
+                                    <img src={profile.avatar} alt={profile.name} className="w-full h-full object-cover rounded-full" />
+                                ) : (
+                                    <div className="w-full h-full bg-slate-100 rounded-full flex items-center justify-center text-primary">
+                                        <i className="fa-solid fa-user-astronaut text-5xl md:text-7xl"></i>
+                                    </div>
+                                )}
+                            </div>
+                            <h1 className="text-3xl md:text-4xl font-extrabold text-gray-900 text-center leading-tight">{profile.name}</h1>
+                            <p className="text-md md:text-lg text-primary font-bold mt-2 uppercase tracking-wide">{profile.title}</p>
+                            
+                            {/* Sosmed / Portofolio Link Buttons */}
+                            {profile.socialLinks && profile.socialLinks.length > 0 && (
+                                <div className="flex flex-wrap justify-center gap-3 mt-6">
+                                    {profile.socialLinks.map((link) => (
+                                        <a 
+                                            key={link.id} 
+                                            href={link.url} 
+                                            target="_blank" 
+                                            rel="noopener noreferrer" 
+                                            className="flex items-center gap-2 bg-slate-50 hover:bg-indigo-50 hover:text-primary text-slate-700 font-semibold px-4 py-2 border border-slate-200 rounded-full text-xs md:text-sm transition-all shadow-sm"
+                                        >
+                                            <i className={`${link.icon} text-md`}></i>
+                                            {link.name}
+                                        </a>
+                                    ))}
+                                </div>
+                            )}
+
+                            <div className="w-full border-t border-gray-100 mt-10 pt-10 text-left space-y-8">
+                                <div>
+                                    <h3 className="text-lg font-black text-gray-900 mb-4 border-l-4 border-primary pl-3">Tentang Saya</h3>
+                                    <p className="text-gray-600 leading-relaxed whitespace-pre-wrap">{profile.bio}</p>
+                                </div>
+                                
+                                <div>
+                                    <h3 className="text-lg font-black text-gray-900 mb-4 border-l-4 border-primary pl-3">Keahlian (Skills)</h3>
+                                    <div className="flex flex-wrap gap-2">
+                                        {profile.skills.split(',').map((skill, index) => (
+                                            <span key={index} className="bg-indigo-50 text-indigo-700 border border-indigo-100 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider">
+                                                {skill.trim()}
+                                            </span>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100">
+                                    <h3 className="text-md font-bold text-gray-900 mb-4 flex items-center gap-2">
+                                        <i className="fa-solid fa-circle-nodes text-primary"></i> Hubungi Langsung
+                                    </h3>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm text-gray-600">
+                                        <div className="flex items-center gap-3 bg-white p-3 rounded-xl border border-slate-100">
+                                            <i className="fa-solid fa-envelope text-indigo-500 text-lg"></i>
+                                            <div>
+                                                <p className="text-xs text-gray-400 font-semibold">EMAIL</p>
+                                                <a href={`mailto:${profile.email}`} className="font-semibold text-slate-800 hover:text-primary transition">{profile.email}</a>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-3 bg-white p-3 rounded-xl border border-slate-100">
+                                            <i className="fa-brands fa-whatsapp text-green-500 text-lg"></i>
+                                            <div>
+                                                <p className="text-xs text-gray-400 font-semibold">WHATSAPP</p>
+                                                <a href={`https://wa.me/${profile.waNumber}`} target="_blank" className="font-semibold text-slate-800 hover:text-green-500 transition">+{profile.waNumber}</a>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- TAMPILAN ADMIN: DASHBOARD & EDITOR (Lengkap dengan Unggah Foto, Favicon, Sosmed) ---
         function AdminDashboard({ products, profile, onSaveProfile, onSaveProduct, onDeleteProduct, onLogout, triggerAlert }) {
             const [activeTab, setActiveTab] = useState('products'); 
             const [editingProduct, setEditingProduct] = useState(null);
@@ -646,32 +849,92 @@
             // Local state untuk Profil (Menghindari simpan setiap ketik keyboard)
             const [localProfile, setLocalProfile] = useState(profile);
             
-            // Sinkronisasi jika profil Cloud berubah
+            // Sosmed form temp state
+            const [newLinkName, setNewLinkName] = useState('');
+            const [newLinkUrl, setNewLinkUrl] = useState('');
+            const [newLinkIcon, setNewLinkIcon] = useState('fa-solid fa-link');
+
             useEffect(() => {
                 setLocalProfile(profile);
             }, [profile]);
 
-            // Handlers Profil
+            // Handlers Profil Teks
             const handleProfileChange = (e) => {
                 const { name, value } = e.target;
                 setLocalProfile(prev => ({ ...prev, [name]: value }));
+            };
+
+            // Handler Unggah & Kompres Foto Profil
+            const handleAvatarUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                compressImage(file, 300, 300, (base64) => {
+                    setLocalProfile(prev => ({ ...prev, avatar: base64 }));
+                });
+            };
+
+            // Handler Unggah & Kompres Favicon Web
+            const handleFaviconUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                compressImage(file, 64, 64, (base64) => {
+                    setLocalProfile(prev => ({ ...prev, favicon: base64 }));
+                });
+            };
+
+            // Handler Tambah Link Sosial Media
+            const handleAddSocialLink = () => {
+                if(!newLinkName || !newLinkUrl) {
+                    triggerAlert("Nama Link dan URL wajib diisi!");
+                    return;
+                }
+                const newLink = {
+                    id: Date.now().toString(),
+                    name: newLinkName,
+                    url: newLinkUrl,
+                    icon: newLinkIcon
+                };
+                setLocalProfile(prev => ({
+                    ...prev,
+                    socialLinks: [...(prev.socialLinks || []), newLink]
+                }));
+                setNewLinkName('');
+                setNewLinkUrl('');
+                setNewLinkIcon('fa-solid fa-link');
+            };
+
+            // Handler Hapus Link Sosial Media
+            const handleRemoveSocialLink = (id) => {
+                setLocalProfile(prev => ({
+                    ...prev,
+                    socialLinks: prev.socialLinks.filter(link => link.id !== id)
+                }));
             };
 
             const submitProfileToCloud = async () => {
                 setIsSaving(true);
                 await onSaveProfile(localProfile);
                 setIsSaving(false);
-                triggerAlert("Data profil Anda telah berhasil disimpan secara permanen di Cloud!");
+                triggerAlert("Data profil, foto, dan tautan kustom Anda telah tersimpan secara permanen!");
             };
 
-            // Handlers Produk
+            // Handlers Produk & Thumbnail
             const handleAddNew = () => {
                 setEditingProduct({
                     id: Date.now(),
                     title: "Aplikasi Baru",
                     description: "Deskripsi aplikasi web Anda disini.",
                     price: "50000",
-                    code: `<!DOCTYPE html>\n<html>\n<head>\n  <title>Aplikasi Baru</title>\n  <style>body { font-family: sans-serif; text-align: center; padding-top: 50px; }</style>\n</head>\n<body>\n  <h1>Halo Dunia</h1>\n  <p>Silahkan edit HTML ini.</p>\n</body>\n</html>`
+                    code: `<!DOCTYPE html>\n<html>\n<head>\n  <title>Aplikasi Baru</title>\n  <style>body { font-family: sans-serif; text-align: center; padding-top: 50px; }</style>\n</head>\n<body>\n  <h1>Halo Dunia</h1>\n  <p>Silahkan edit HTML ini.</p>\n</body>\n</html>`,
+                    thumbnail: ""
+                });
+            };
+
+            const handleThumbnailUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                compressImage(file, 400, 300, (base64) => {
+                    setEditingProduct(prev => ({ ...prev, thumbnail: base64 }));
                 });
             };
 
@@ -680,13 +943,13 @@
                 await onSaveProduct(editingProduct);
                 setEditingProduct(null);
                 setIsSaving(false);
-                triggerAlert("Produk berhasil diunggah dan disimpan ke Cloud Database!");
+                triggerAlert("Produk dan Thumbnail berhasil diunggah ke Cloud Database!");
             };
 
             const handleDeleteProduct = (id) => {
                 triggerAlert(
                     "Apakah Anda yakin ingin menghapus produk ini secara permanen dari Cloud?",
-                    true, // Mode Konfirmasi
+                    true, 
                     async () => {
                         await onDeleteProduct(id);
                     }
@@ -696,7 +959,7 @@
             return (
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
                     {/* Header Admin */}
-                    <div className="flex flex-col md:flex-row justify-between items-center mb-6 bg-dark text-white p-4 rounded-xl shadow-lg animate-fadeIn">
+                    <div className="flex flex-col md:flex-row justify-between items-center mb-6 bg-dark text-white p-4 rounded-xl shadow-lg">
                         <div className="flex items-center mb-4 md:mb-0">
                             <i className="fa-solid fa-user-shield text-2xl mr-3 text-primary"></i>
                             <div>
@@ -704,12 +967,12 @@
                                 <p className="text-xs text-green-400"><i className="fa-solid fa-lock-open mr-1"></i> Terhubung secara aman sebagai Pengelola Resmi</p>
                             </div>
                         </div>
-                        <div className="flex gap-2">
-                            <button onClick={() => setActiveTab('products')} className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'products' ? 'bg-primary' : 'bg-gray-700 hover:bg-gray-600'}`}>
+                        <div className="flex flex-wrap gap-2">
+                            <button onClick={() => { setActiveTab('products'); setEditingProduct(null); }} className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'products' ? 'bg-primary' : 'bg-gray-700 hover:bg-gray-600'}`}>
                                 Kelola Produk
                             </button>
-                            <button onClick={() => setActiveTab('profile')} className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'profile' ? 'bg-primary' : 'bg-gray-700 hover:bg-gray-600'}`}>
-                                Kelola Profil
+                            <button onClick={() => { setActiveTab('profile'); setEditingProduct(null); }} className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'profile' ? 'bg-primary' : 'bg-gray-700 hover:bg-gray-600'}`}>
+                                Kelola Profil & Sosmed
                             </button>
                             <button onClick={onLogout} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium ml-2 transition">
                                 <i className="fa-solid fa-right-from-bracket"></i> Keluar
@@ -719,42 +982,133 @@
 
                     {/* Konten Tab Profil */}
                     {activeTab === 'profile' && !editingProduct && (
-                        <div className="bg-white p-6 md:p-8 rounded-xl shadow-md border border-gray-100 relative animate-fadeIn">
+                        <div className="bg-white p-6 md:p-8 rounded-xl shadow-md border border-gray-100 relative animate-fadeIn space-y-8">
                             <div className="flex justify-between items-center mb-6 border-b pb-2">
-                                <h3 className="text-xl font-bold"><i className="fa-solid fa-user-pen mr-2"></i> Edit Data CV / Profil</h3>
+                                <h3 className="text-xl font-bold"><i className="fa-solid fa-user-pen mr-2"></i> Edit Data CV & Sosmed</h3>
                                 <button 
                                     onClick={submitProfileToCloud} 
                                     disabled={isSaving}
-                                    className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg font-medium shadow disabled:opacity-50 transition"
+                                    className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg font-medium shadow disabled:opacity-50 transition flex items-center gap-1"
                                 >
-                                    {isSaving ? <><i className="fa-solid fa-spinner fa-spin mr-2"></i>Menyimpan...</> : <><i className="fa-solid fa-cloud-arrow-up mr-2"></i>Simpan ke Cloud</>}
+                                    {isSaving ? <><i className="fa-solid fa-spinner fa-spin"></i> Menyimpan...</> : <><i className="fa-solid fa-cloud-arrow-up"></i> Simpan ke Cloud</>}
                                 </button>
                             </div>
                             
+                            {/* Baris Atas: Unggah Foto (Profil & Favicon) */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                                {/* Profil Photo */}
+                                <div className="flex flex-col sm:flex-row items-center gap-4">
+                                    <div className="w-24 h-24 rounded-full border bg-white flex items-center justify-center overflow-hidden shrink-0 shadow-sm">
+                                        {localProfile.avatar ? (
+                                            <img src={localProfile.avatar} alt="Preview Avatar" className="w-full h-full object-cover" />
+                                        ) : (
+                                            <i className="fa-solid fa-user text-3xl text-gray-300"></i>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-bold text-gray-700 mb-1">Unggah Foto Profil</label>
+                                        <input type="file" accept="image/*" onChange={handleAvatarUpload} className="text-xs text-gray-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-primary hover:file:bg-indigo-100 cursor-pointer" />
+                                        <p className="text-[10px] text-gray-400 mt-1">Sistem mengompresi gambar otomatis agar hemat database.</p>
+                                    </div>
+                                </div>
+
+                                {/* Favicon Web */}
+                                <div className="flex flex-col sm:flex-row items-center gap-4">
+                                    <div className="w-24 h-24 rounded-xl border bg-white flex items-center justify-center overflow-hidden shrink-0 shadow-sm p-3">
+                                        {localProfile.favicon ? (
+                                            <img src={localProfile.favicon} alt="Preview Favicon" className="w-full h-full object-contain" />
+                                        ) : (
+                                            <i className="fa-solid fa-icons text-3xl text-gray-300"></i>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-bold text-gray-700 mb-1">Unggah Ikon Web (Favicon)</label>
+                                        <input type="file" accept="image/*" onChange={handleFaviconUpload} className="text-xs text-gray-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-primary hover:file:bg-indigo-100 cursor-pointer" />
+                                        <p className="text-[10px] text-gray-400 mt-1">Mengganti ikon kecil di tab browser secara dinamis.</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Baris Tengah: Teks Profil */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Nama Lengkap</label>
-                                    <input type="text" name="name" value={localProfile.name} onChange={handleProfileChange} className="w-full p-2 border rounded focus:ring-2 focus:ring-primary focus:outline-none" />
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Nama Lengkap</label>
+                                    <input type="text" name="name" value={localProfile.name} onChange={handleProfileChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-sm" />
                                 </div>
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Pekerjaan / Titel</label>
-                                    <input type="text" name="title" value={localProfile.title} onChange={handleProfileChange} className="w-full p-2 border rounded focus:ring-2 focus:ring-primary focus:outline-none" />
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Pekerjaan / Titel</label>
+                                    <input type="text" name="title" value={localProfile.title} onChange={handleProfileChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-sm" />
                                 </div>
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                                    <input type="email" name="email" value={localProfile.email} onChange={handleProfileChange} className="w-full p-2 border rounded focus:ring-2 focus:ring-primary focus:outline-none" />
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Email</label>
+                                    <input type="email" name="email" value={localProfile.email} onChange={handleProfileChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-sm" />
                                 </div>
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">No WhatsApp (Gunakan 62...)</label>
-                                    <input type="text" name="waNumber" value={localProfile.waNumber} onChange={handleProfileChange} className="w-full p-2 border rounded focus:ring-2 focus:ring-primary focus:outline-none" />
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">No WhatsApp (Gunakan 62...)</label>
+                                    <input type="text" name="waNumber" value={localProfile.waNumber} onChange={handleProfileChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-sm" />
                                 </div>
                                 <div className="md:col-span-2">
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Keahlian (Pisahkan dengan koma)</label>
-                                    <input type="text" name="skills" value={localProfile.skills} onChange={handleProfileChange} className="w-full p-2 border rounded focus:ring-2 focus:ring-primary focus:outline-none" />
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Keahlian (Pisahkan dengan koma)</label>
+                                    <input type="text" name="skills" value={localProfile.skills} onChange={handleProfileChange} className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-sm" />
                                 </div>
                                 <div className="md:col-span-2">
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Bio / Tentang Saya</label>
-                                    <textarea name="bio" value={localProfile.bio} onChange={handleProfileChange} rows="4" className="w-full p-2 border rounded focus:ring-2 focus:ring-primary focus:outline-none"></textarea>
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Bio / Tentang Saya</label>
+                                    <textarea name="bio" value={localProfile.bio} onChange={handleProfileChange} rows="4" className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-primary focus:outline-none text-sm"></textarea>
+                                </div>
+                            </div>
+
+                            {/* Baris Bawah: Pengelola Tautan Kustom (Social Links) */}
+                            <div className="border-t pt-8">
+                                <h4 className="text-md font-bold text-gray-900 mb-4 flex items-center gap-2"><i className="fa-solid fa-link text-primary"></i> Kelola Tautan Kustom (Sosmed/Portofolio)</h4>
+                                
+                                {/* Form tambah link */}
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-100 mb-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nama Tautan</label>
+                                        <input type="text" placeholder="Misal: Facebook, Discord, LinkedIn" value={newLinkName} onChange={(e) => setNewLinkName(e.target.value)} className="w-full p-2 border rounded-lg text-xs" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Alamat URL Tautan</label>
+                                        <input type="url" placeholder="https://example.com/username" value={newLinkUrl} onChange={(e) => setNewLinkUrl(e.target.value)} className="w-full p-2 border rounded-lg text-xs" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Pilih Jenis Ikon</label>
+                                        <select value={newLinkIcon} onChange={(e) => setNewLinkIcon(e.target.value)} className="w-full p-2 border rounded-lg text-xs">
+                                            <option value="fa-solid fa-link">Default Link (Ikon Rantai)</option>
+                                            <option value="fa-brands fa-facebook">Facebook</option>
+                                            <option value="fa-brands fa-discord">Discord</option>
+                                            <option value="fa-brands fa-github">GitHub</option>
+                                            <option value="fa-brands fa-linkedin">LinkedIn</option>
+                                            <option value="fa-solid fa-briefcase">Freelancer / Portofolio</option>
+                                            <option value="fa-brands fa-instagram">Instagram</option>
+                                            <option value="fa-brands fa-telegram">Telegram</option>
+                                        </select>
+                                    </div>
+                                    <div className="sm:col-span-3 flex justify-end">
+                                        <button type="button" onClick={handleAddSocialLink} className="bg-primary hover:bg-indigo-700 text-white font-bold px-4 py-2 rounded-lg text-xs transition">
+                                            <i className="fa-solid fa-plus mr-1"></i> Tambahkan Link
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* List link aktif */}
+                                <div className="space-y-2">
+                                    {(!localProfile.socialLinks || localProfile.socialLinks.length === 0) ? (
+                                        <p className="text-xs text-gray-400 italic">Belum ada tautan sosial yang ditambahkan.</p>
+                                    ) : (
+                                        localProfile.socialLinks.map((link) => (
+                                            <div key={link.id} className="flex justify-between items-center bg-white p-3 rounded-xl border border-gray-100 hover:shadow-sm transition">
+                                                <div className="flex items-center gap-3 text-sm">
+                                                    <span className="w-8 h-8 rounded-lg bg-indigo-50 text-primary flex items-center justify-center"><i className={link.icon}></i></span>
+                                                    <div>
+                                                        <span className="font-bold text-gray-800 mr-2">{link.name}</span>
+                                                        <span className="text-xs text-gray-400 font-mono hidden sm:inline-block">{link.url}</span>
+                                                    </div>
+                                                </div>
+                                                <button onClick={() => handleRemoveSocialLink(link.id)} className="text-red-500 hover:text-red-700 text-xs font-bold px-3 py-1 bg-red-50 rounded-lg transition">Hapus</button>
+                                            </div>
+                                        ))
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -765,7 +1119,7 @@
                         <div className="animate-fadeIn">
                             <div className="flex justify-between items-center mb-4">
                                 <h3 className="text-xl font-bold"><i className="fa-solid fa-layer-group mr-2"></i> Daftar Aplikasi HTML</h3>
-                                <button onClick={handleAddNew} className="bg-secondary hover:bg-green-600 text-white px-4 py-2 rounded-lg shadow font-medium transition">
+                                <button onClick={handleAddNew} className="bg-secondary hover:bg-green-600 text-white px-4 py-2 rounded-lg shadow font-semibold transition">
                                     <i className="fa-solid fa-plus mr-1"></i> Tambah Baru
                                 </button>
                             </div>
@@ -777,16 +1131,25 @@
                                     <ul className="divide-y divide-gray-200">
                                         {products.map(p => (
                                             <li key={p.id} className="p-4 hover:bg-gray-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 transition">
-                                                <div>
-                                                    <h4 className="font-bold text-gray-900">{p.title}</h4>
-                                                    <p className="text-sm text-gray-500 truncate max-w-md">{p.description}</p>
-                                                    <p className="text-sm font-medium text-secondary mt-1">Rp {p.price}</p>
+                                                <div className="flex items-center gap-4">
+                                                    <div className="w-16 h-12 rounded bg-gray-100 border overflow-hidden flex items-center justify-center shrink-0">
+                                                        {p.thumbnail ? (
+                                                            <img src={p.thumbnail} alt={p.title} className="w-full h-full object-cover" />
+                                                        ) : (
+                                                            <i className="fa-solid fa-laptop-code text-gray-400"></i>
+                                                        )}
+                                                    </div>
+                                                    <div>
+                                                        <h4 className="font-bold text-gray-900">{p.title}</h4>
+                                                        <p className="text-sm text-gray-500 truncate max-w-[200px] xs:max-w-xs md:max-w-md">{p.description}</p>
+                                                        <p className="text-sm font-medium text-secondary mt-1">Rp {p.price}</p>
+                                                    </div>
                                                 </div>
                                                 <div className="flex gap-2">
-                                                    <button onClick={() => setEditingProduct(p)} className="px-3 py-1 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 rounded text-sm font-medium transition">
+                                                    <button onClick={() => setEditingProduct(p)} className="px-3 py-1 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 rounded-lg text-sm font-semibold transition">
                                                         <i className="fa-solid fa-pen-to-square mr-1"></i> Edit & Kode
                                                     </button>
-                                                    <button onClick={() => handleDeleteProduct(p.id)} className="px-3 py-1 bg-red-100 text-red-700 hover:bg-red-200 rounded text-sm font-medium transition">
+                                                    <button onClick={() => handleDeleteProduct(p.id)} className="px-3 py-1 bg-red-100 text-red-700 hover:bg-red-200 rounded-lg text-sm font-semibold transition">
                                                         <i className="fa-solid fa-trash"></i>
                                                     </button>
                                                 </div>
@@ -798,14 +1161,14 @@
                         </div>
                     )}
 
-                    {/* Editor Produk HTML */}
+                    {/* Editor Produk HTML dengan split screen */}
                     {editingProduct && (
                         <div className="bg-white rounded-xl shadow-xl border border-gray-200 flex flex-col h-[85vh] animate-fadeIn">
-                            <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl">
-                                <h3 className="font-bold text-lg"><i className="fa-solid fa-code mr-2"></i> HTML Editor: {editingProduct.title}</h3>
+                            <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl shrink-0">
+                                <h3 className="font-bold text-md sm:text-lg"><i className="fa-solid fa-code mr-2"></i> HTML Editor: {editingProduct.title}</h3>
                                 <div className="flex gap-2">
-                                    <button onClick={() => setEditingProduct(null)} className="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-100 font-medium">Batal</button>
-                                    <button onClick={handleSaveProduct} disabled={isSaving} className="px-4 py-2 bg-primary hover:bg-indigo-700 text-white rounded shadow font-medium disabled:opacity-50 transition">
+                                    <button onClick={() => setEditingProduct(null)} className="px-3 sm:px-4 py-2 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-100 text-xs sm:text-sm font-medium">Batal</button>
+                                    <button onClick={handleSaveProduct} disabled={isSaving} className="px-3 sm:px-4 py-2 bg-primary hover:bg-indigo-700 text-white rounded-lg shadow text-xs sm:text-sm font-semibold disabled:opacity-50 transition">
                                         {isSaving ? <><i className="fa-solid fa-spinner fa-spin mr-1"></i> Menyimpan...</> : <><i className="fa-solid fa-cloud-arrow-up mr-1"></i> Simpan ke Cloud</>}
                                     </button>
                                 </div>
@@ -813,54 +1176,70 @@
                             
                             <div className="flex-grow flex flex-col lg:flex-row overflow-hidden">
                                 {/* Editor Kiri */}
-                                <div className="w-full lg:w-1/2 flex flex-col border-r border-gray-200 h-full">
+                                <div className="w-full lg:w-1/2 flex flex-col border-r border-gray-200 h-1/2 lg:h-full overflow-hidden">
                                     <div className="p-4 border-b bg-white space-y-3 shrink-0">
-                                        <input 
-                                            type="text" placeholder="Judul Aplikasi" 
-                                            value={editingProduct.title} 
-                                            onChange={(e) => setEditingProduct({...editingProduct, title: e.target.value})}
-                                            className="w-full p-2 border rounded font-bold"
-                                        />
+                                        <div className="flex flex-col sm:flex-row gap-4">
+                                            {/* Form Thumbnail Produk */}
+                                            <div className="flex items-center gap-3 bg-slate-50 p-2.5 rounded-xl border border-slate-150 shrink-0">
+                                                <div className="w-14 h-10 bg-white border rounded overflow-hidden flex items-center justify-center">
+                                                    {editingProduct.thumbnail ? (
+                                                        <img src={editingProduct.thumbnail} alt="Thumb App" className="w-full h-full object-cover" />
+                                                    ) : (
+                                                        <i className="fa-solid fa-image text-gray-300"></i>
+                                                    )}
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-gray-500 uppercase">Thumbnail App</label>
+                                                    <input type="file" accept="image/*" onChange={handleThumbnailUpload} className="text-[10px] text-gray-500 file:mr-1 file:py-1 file:px-2 file:rounded-full file:border-0 file:text-[10px] file:font-bold file:bg-indigo-50 file:text-primary hover:file:bg-indigo-100 cursor-pointer w-28 overflow-hidden" />
+                                                </div>
+                                            </div>
+                                            <input 
+                                                type="text" placeholder="Judul Aplikasi" 
+                                                value={editingProduct.title} 
+                                                onChange={(e) => setEditingProduct({...editingProduct, title: e.target.value})}
+                                                className="flex-grow p-2 border rounded-lg font-bold text-sm"
+                                            />
+                                        </div>
                                         <div className="flex gap-3">
                                             <input 
-                                                type="number" placeholder="Harga (Misal: 50000)" 
+                                                type="number" placeholder="Harga (Misal: 150000)" 
                                                 value={editingProduct.price} 
                                                 onChange={(e) => setEditingProduct({...editingProduct, price: e.target.value})}
-                                                className="w-1/3 p-2 border rounded text-sm"
+                                                className="w-1/3 p-2 border rounded-lg text-xs"
                                             />
                                             <input 
                                                 type="text" placeholder="Deskripsi Singkat" 
                                                 value={editingProduct.description} 
                                                 onChange={(e) => setEditingProduct({...editingProduct, description: e.target.value})}
-                                                className="w-2/3 p-2 border rounded text-sm"
+                                                className="w-2/3 p-2 border rounded-lg text-xs"
                                             />
                                         </div>
                                     </div>
-                                    <div className="flex-grow flex flex-col relative bg-dark">
-                                        <div className="bg-gray-800 text-gray-400 text-xs py-1 px-3 border-b border-gray-700 flex justify-between">
+                                    <div className="flex-grow flex flex-col relative bg-dark overflow-hidden">
+                                        <div className="bg-gray-800 text-gray-400 text-[10px] py-1 px-3 border-b border-gray-700 flex justify-between shrink-0">
                                             <span>index.html (Paste kode aplikasi Anda di sini)</span>
                                         </div>
                                         <textarea 
                                             value={editingProduct.code}
                                             onChange={(e) => setEditingProduct({...editingProduct, code: e.target.value})}
-                                            className="flex-grow w-full bg-[#1e1e1e] text-[#d4d4d4] font-mono p-4 focus:outline-none resize-none text-sm leading-relaxed"
+                                            className="flex-grow w-full bg-[#1e1e1e] text-[#d4d4d4] font-mono p-4 focus:outline-none resize-none text-xs leading-relaxed overflow-y-auto"
                                             spellCheck="false"
                                         ></textarea>
                                     </div>
                                 </div>
                                 
                                 {/* Preview Kanan */}
-                                <div className="w-full lg:w-1/2 h-[50vh] lg:h-full bg-white relative flex flex-col">
-                                    <div className="bg-gray-100 text-gray-600 text-xs py-2 px-3 border-b flex justify-between items-center shadow-sm shrink-0">
+                                <div className="w-full lg:w-1/2 h-1/2 lg:h-full bg-white relative flex flex-col">
+                                    <div className="bg-gray-100 text-gray-600 text-[10px] py-2 px-3 border-b flex justify-between items-center shadow-sm shrink-0">
                                         <span className="font-bold"><i className="fa-solid fa-eye mr-1"></i> Live Preview</span>
-                                        <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded">Auto Update</span>
+                                        <span className="text-[9px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">Auto Update</span>
                                     </div>
                                     <div className="flex-grow relative bg-white">
                                         <iframe 
                                             srcDoc={editingProduct.code} 
                                             className="absolute inset-0 w-full h-full border-0"
                                             sandbox="allow-scripts allow-same-origin allow-forms"
-                                            title="Editor Preview"
+                                            title="Editor Live Preview"
                                         ></iframe>
                                     </div>
                                 </div>
