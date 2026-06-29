@@ -47,12 +47,8 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // --- 1. KONFIGURASI KUNCI MASTER PEMULIHAN ADMIN ---
-        const RECOVERY_MASTER_KEY = "admin123";
-
-        // --- 2. PASTE CONFIG FIREBASE ANDA DI SINI UNTUK DEPLOY MANDIRI ---
-        // Jika Anda mempublish ke GitHub Pages / Vercel, ganti null dengan config dari konsol Firebase Anda:
-        // const MY_FIREBASE_CONFIG = { apiKey: "...", authDomain: "...", projectId: "...", ... };
+        // --- 1. CONFIG FIREBASE ANDA ---
+        // Ganti null dengan config dari konsol Firebase Anda agar database cloud aktif secara permanen di Vercel:
         const MY_FIREBASE_CONFIG = {
   apiKey: "AIzaSyC7_kfqIm8OTzwqgnCzFSpfjYMETFtwDEU",
   authDomain: "difam-5c124.firebaseapp.com",
@@ -62,7 +58,7 @@
   appId: "1:41833181587:web:6492096dd7e21ae581f866"
 };
 
-        // --- DATA AWAL SEBAGAI FALLBACK (Jika Cloud Kosong) ---
+        // --- DATA AWAL SEBAGAI FALLBACK (Jika Cloud Kosong / Offline) ---
         const initialProfile = {
             name: "Budi Developer",
             title: "Fullstack Web Developer",
@@ -115,15 +111,16 @@
             const [products, setProducts] = useState([]);
             const [activeProduct, setActiveProduct] = useState(null);
 
-            // State Pemulihan Rahasia & Dialog Kustom
+            // State Login Rahasia & Dialog Kustom
             const [claimCount, setClaimCount] = useState(0);
-            const [showClaimModal, setShowClaimModal] = useState(false);
-            const [claimInput, setClaimInput] = useState('');
-            const [claimStatus, setClaimStatus] = useState({ error: '', success: '' });
+            const [showLoginModal, setShowLoginModal] = useState(false);
+            const [adminEmail, setAdminEmail] = useState('');
+            const [adminPassword, setAdminPassword] = useState('');
+            const [loginStatus, setLoginStatus] = useState({ error: '', success: '' });
             const [customAlert, setCustomAlert] = useState(null); // { message, isConfirm, onConfirm }
 
-            // Cek apakah user saat ini adalah Pemilik (Owner)
-            const isOwner = user && profile && profile.ownerUid === user.uid;
+            // Menentukan apakah user yang login saat ini adalah Admin asli (Non-anonim)
+            const isOwner = user && !user.isAnonymous;
 
             // Trigger Dialog Kustom
             const triggerAlert = (message, isConfirm = false, onConfirm = null) => {
@@ -144,11 +141,11 @@
                         }
 
                         if (!firebaseConfig || !firebaseConfig.apiKey) {
-                            throw new Error("Konfigurasi Firebase tidak ditemukan. Silakan tambahkan kredensial Firebase Anda ke variabel 'MY_FIREBASE_CONFIG' di baris ke-39 kode HTML.");
+                            throw new Error("Konfigurasi Firebase tidak ditemukan. Silakan tambahkan kredensial Firebase Anda ke variabel 'MY_FIREBASE_CONFIG' di baris ke-38.");
                         }
 
                         const { initializeApp } = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js');
-                        const { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js');
+                        const { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged, signInWithEmailAndPassword, signOut } = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js');
                         const { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } = await import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js');
 
                         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -157,31 +154,33 @@
                         const auth = getAuth(app);
                         const db = getFirestore(app);
                         
-                        setFb({ db, appId, collection, doc, setDoc, deleteDoc, onSnapshot });
+                        setFb({ db, auth, appId, collection, doc, setDoc, deleteDoc, onSnapshot, signInWithEmailAndPassword, signOut });
 
-                        // Autentikasi sesuai aturan
+                        // Autentikasi Publik Default (Anonymous)
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                             await signInWithCustomToken(auth, __initial_auth_token);
                         } else {
-                            await signInAnonymously(auth);
+                            // Cek jika session auth sebelumnya masih ada (agar login admin persisten saat refresh)
+                            onAuthStateChanged(auth, async (u) => {
+                                if (!u) {
+                                    await signInAnonymously(auth);
+                                } else {
+                                    setUser(u);
+                                }
+                            });
                         }
-
-                        onAuthStateChanged(auth, (u) => {
-                            setUser(u);
-                        });
                     } catch (err) {
                         console.error("Firebase init error:", err);
                         setDbInitError(err.message);
-                        setLoading(false); // Matikan loading agar tetap bisa memakai fallback offline mode
+                        setLoading(false); // Mode offline aman
                     }
                 };
                 initFirebase();
             }, []);
 
-            // Ambil Data dari Firestore
+            // Ambil Data dari Firestore secara Realtime
             useEffect(() => {
                 if (!user || !fb) {
-                    // Jika Firebase tidak terkonfigurasi, gunakan data lokal dummy agar web tetap tampil indah
                     if (dbInitError) {
                         setProducts(initialProducts);
                         setLoading(false);
@@ -197,35 +196,26 @@
                     if(profileReady && productsReady) setLoading(false);
                 }
 
-                // Listener Profil (Public Data)
+                // Listener Profil
                 const unsubProfile = onSnapshot(
                     collection(db, 'artifacts', appId, 'public', 'data', 'profileData'),
                     (snapshot) => {
                         if (snapshot.empty) {
-                            // Seed data jika Cloud Kosong, DAN tetapkan user pertama sebagai Owner
-                            const newProfile = { ...initialProfile, ownerUid: user.uid };
-                            setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profileData', 'main'), newProfile);
+                            // Masukkan data default jika database benar-benar kosong pertama kali
+                            setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profileData', 'main'), initialProfile);
                         } else {
-                            const data = snapshot.docs[0].data();
-                            // Jika data lama belum ada ownerUid, auto-klaim oleh user ini (Migrasi)
-                            if (!data.ownerUid) {
-                                const updatedData = { ...data, ownerUid: user.uid };
-                                setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profileData', 'main'), updatedData);
-                            } else {
-                                setProfile(data);
-                            }
+                            setProfile(snapshot.docs[0].data());
                         }
                         profileReady = true; checkReady();
                     },
                     (error) => { console.error("Profile sync error:", error); profileReady = true; checkReady(); }
                 );
 
-                // Listener Produk (Public Data)
+                // Listener Produk
                 const unsubProducts = onSnapshot(
                     collection(db, 'artifacts', appId, 'public', 'data', 'productsData'),
                     (snapshot) => {
                         if (snapshot.empty) {
-                            // Seed data produk pertama kali
                             setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'productsData', initialProducts[0].id.toString()), initialProducts[0]);
                         } else {
                             const prods = [];
@@ -243,77 +233,83 @@
                 };
             }, [user, fb, dbInitError]);
 
-            // Fungsi Simpan ke Cloud (Dioper ke AdminDashboard)
+            // Handler Simpan Profil
             const saveProfileToCloud = async (newProfile) => {
                 if(!fb) return;
                 const { db, appId, doc, setDoc } = fb;
                 await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profileData', 'main'), newProfile);
             };
 
+            // Handler Simpan Produk
             const saveProductToCloud = async (prod) => {
                 if(!fb) return;
                 const { db, appId, doc, setDoc } = fb;
                 await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'productsData', prod.id.toString()), prod);
             };
 
+            // Handler Hapus Produk
             const deleteProductFromCloud = async (prodId) => {
                 if(!fb) return;
                 const { db, appId, doc, deleteDoc } = fb;
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'productsData', prodId.toString()));
             };
 
-            // Klaim Kepemilikan melalui Master Key
-            const handleClaimOwnership = async (e) => {
+            // Handler login Admin dengan Email & Password resmi Firebase Auth
+            const handleAdminLogin = async (e) => {
                 e.preventDefault();
-                setClaimStatus({ error: '', success: '' });
+                setLoginStatus({ error: '', success: '' });
                 
-                if (claimInput === RECOVERY_MASTER_KEY) {
-                    try {
-                        if (dbInitError) {
-                            throw new Error(`Koneksi database tidak aktif:\n${dbInitError}`);
-                        }
-                        if (!fb || !user) {
-                            throw new Error("Layanan Firebase sedang melakukan sinkronisasi latar belakang. Tunggu 3 detik dan coba lagi.");
-                        }
-                        const { db, appId, doc, setDoc } = fb;
-                        
-                        const updatedProfile = { ...profile, ownerUid: user.uid };
-                        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'profileData', 'main'), updatedProfile);
-                        
-                        setProfile(updatedProfile);
-                        setClaimStatus({ error: '', success: 'Klaim Berhasil! Anda sekarang terdaftar sebagai Pemilik resmi.' });
-                        setTimeout(() => {
-                            setShowClaimModal(false);
-                            setClaimCount(0);
-                            setClaimInput('');
-                            setClaimStatus({ error: '', success: '' });
-                            setView('admin'); // Masuk langsung ke Admin
-                        }, 1500);
-                    } catch (err) {
-                        setClaimStatus({ error: err.message, success: '' });
+                try {
+                    if (dbInitError) {
+                        throw new Error(`Database tidak terhubung:\n${dbInitError}`);
                     }
-                } else {
-                    setClaimStatus({ error: 'Kunci Pemulihan Salah!', success: '' });
+                    if (!fb) {
+                        throw new Error("Layanan Firebase sedang dimuat, harap tunggu.");
+                    }
+                    
+                    const { auth, signInWithEmailAndPassword } = fb;
+                    await signInWithEmailAndPassword(auth, adminEmail, adminPassword);
+                    
+                    setLoginStatus({ error: '', success: 'Sign In Berhasil! Selamat datang kembali Admin.' });
+                    setTimeout(() => {
+                        setShowLoginModal(false);
+                        setClaimCount(0);
+                        setAdminEmail('');
+                        setAdminPassword('');
+                        setLoginStatus({ error: '', success: '' });
+                        setView('admin');
+                    }, 1500);
+                } catch (err) {
+                    setLoginStatus({ error: err.message.replace("Firebase: ", ""), success: '' });
                 }
             };
 
-            // Handler Deteksi Klik Rahasia
+            // Handler Logout Admin (Kembali ke status Guest Anonim)
+            const handleAdminLogout = async () => {
+                if (!fb) return;
+                const { auth, signOut } = fb;
+                await signOut(auth);
+                setView('home');
+                triggerAlert("Anda telah keluar dari mode administrasi secara aman.");
+            };
+
+            // Klik Rahasia di Footer (5 kali klik untuk memunculkan formulir login)
             const handleSecretClick = () => {
                 const nextCount = claimCount + 1;
                 setClaimCount(nextCount);
                 if (nextCount >= 5) {
-                    setShowClaimModal(true);
+                    setShowLoginModal(true);
                     setClaimCount(0);
                 }
             };
 
-            // Navigasi
+            // Navigasi halaman
             const navigate = (page, product = null) => {
                 setView(page);
                 if (product) setActiveProduct(product);
             };
 
-            // Format Mata Uang
+            // Format Rupiah
             const formatRupiah = (angka) => {
                 return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(angka);
             };
@@ -324,7 +320,7 @@
                         <div className="text-center p-6">
                             <i className="fa-solid fa-cloud-arrow-down fa-bounce text-5xl text-primary mb-4"></i>
                             <h2 className="text-xl font-bold text-gray-700">Menyinkronkan Data Cloud...</h2>
-                            <p className="text-sm text-gray-500 mt-2">Menghubungkan ke layanan penyimpanan aman</p>
+                            <p className="text-sm text-gray-500 mt-2">Menghubungkan ke server cloud aman</p>
                         </div>
                     </div>
                 );
@@ -332,11 +328,11 @@
 
             return (
                 <div className="min-h-screen flex flex-col">
-                    {/* BANNER NOTIFIKASI JIKA DATABASE OFFLINE */}
+                    {/* BANNER NOTIFIKASI DEMO */}
                     {dbInitError && (
                         <div className="bg-yellow-500 text-white text-xs py-2 px-4 text-center font-semibold flex items-center justify-center gap-2">
                             <i className="fa-solid fa-triangle-exclamation"></i>
-                            <span>Aplikasi berjalan dalam Mode Demonstrasi Lokal (Offline). Fitur penyimpanan Cloud dinonaktifkan hingga Anda menyetel Firebase Config.</span>
+                            <span>Aplikasi berjalan dalam Mode Offline. Masukkan Firebase Config Anda di variabel 'MY_FIREBASE_CONFIG' untuk mengaktifkan Cloud Database.</span>
                         </div>
                     )}
 
@@ -358,10 +354,10 @@
                                         <i className="fa-solid fa-user-tie md:mr-2"></i><span className="hidden md:inline">Profil CV</span>
                                     </button>
                                     
-                                    {/* HANYA TAMPIL JIKA USER ADALAH PEMILIK (OWNER) */}
+                                    {/* HANYA TAMPIL JIKA LOGIN SEBAGAI ADMIN RESMI */}
                                     {isOwner && (
                                         <button onClick={() => navigate('admin')} className={`px-3 py-2 rounded-md text-sm font-medium ${view === 'admin' ? 'bg-dark text-white' : 'text-gray-600 hover:text-dark hover:bg-gray-100'}`}>
-                                            <i className="fa-solid fa-shield-check md:mr-2 text-green-400"></i><span className="hidden md:inline">Panel Admin</span>
+                                            <i className="fa-solid fa-user-shield md:mr-2 text-green-400"></i><span className="hidden md:inline">Panel Admin</span>
                                         </button>
                                     )}
                                 </div>
@@ -375,7 +371,7 @@
                         {view === 'cv' && <ProfileView profile={profile} />}
                         {view === 'productDetail' && <ProductDetail product={activeProduct} onBack={() => navigate('home')} waNumber={profile.waNumber} formatRupiah={formatRupiah} />}
                         
-                        {/* Halaman Admin dilindungi dengan pengecekan isOwner */}
+                        {/* Panel Admin aman karena memerlukan isOwner asli */}
                         {view === 'admin' && isOwner && (
                             <AdminDashboard 
                                 products={products} 
@@ -383,16 +379,16 @@
                                 onSaveProfile={saveProfileToCloud}
                                 onSaveProduct={saveProductToCloud}
                                 onDeleteProduct={deleteProductFromCloud}
-                                onLogout={() => navigate('home')}
+                                onLogout={handleAdminLogout}
                                 triggerAlert={triggerAlert}
                             />
                         )}
                         
-                        {/* Fallback jika bukan owner tapi mencoba akses URL/view admin */}
+                        {/* Proteksi jika diakses secara paksa */}
                         {view === 'admin' && !isOwner && (
                             <div className="text-center py-20 text-red-500 font-bold text-xl">
-                                <i className="fa-solid fa-triangle-exclamation text-4xl mb-3 block"></i>
-                                Akses Panel Ditolak
+                                <i className="fa-solid fa-circle-xmark text-5xl mb-3 block"></i>
+                                Akses Ditolak. Silakan Sign In sebagai Admin melalui pintu masuk rahasia.
                             </div>
                         )}
                     </main>
@@ -406,17 +402,17 @@
                             <span 
                                 onClick={handleSecretClick} 
                                 className={`cursor-pointer hover:underline select-none flex items-center gap-1 ${dbInitError ? 'text-yellow-400' : 'text-green-400'}`}
-                                title="Klik 5 kali untuk Pemulihan Admin"
+                                title="Ketuk 5 kali untuk masuk Admin"
                             >
                                 <i className={`fa-solid ${dbInitError ? 'fa-cloud-slash' : 'fa-cloud'}`}></i> {dbInitError ? 'Local Mode Active' : 'Cloud Sync Active'}
                             </span>
                         </p>
                     </footer>
 
-                    {/* --- MODAL DIALOG KUSTOM (PENGGANTI ALERT/CONFIRM) --- */}
+                    {/* --- MODAL DIALOG KUSTOM --- */}
                     {customAlert && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
-                            <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full border border-gray-100 animate-fadeIn">
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50 animate-fadeIn">
+                            <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full border border-gray-100">
                                 <h3 className="text-lg font-bold text-gray-900 mb-3 flex items-center">
                                     <i className="fa-solid fa-circle-info text-primary mr-2 text-xl"></i> Informasi
                                 </h3>
@@ -425,7 +421,7 @@
                                     {customAlert.isConfirm && (
                                         <button 
                                             onClick={() => { customAlert.onConfirm && customAlert.onConfirm(); setCustomAlert(null); }}
-                                            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition"
+                                            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition animate-scaleIn"
                                         >
                                             Ya, Lanjutkan
                                         </button>
@@ -441,53 +437,64 @@
                         </div>
                     )}
 
-                    {/* --- MODAL KLAIM KEPEMILIKAN RAHASIA --- */}
-                    {showClaimModal && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-70">
+                    {/* --- MODAL SIGN IN ADMIN SECARA SECURE (EMAIL & PASSWORD) --- */}
+                    {showLoginModal && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-70 backdrop-blur-sm animate-fadeIn">
                             <div className="bg-white rounded-2xl p-6 max-w-md w-full border border-gray-100 shadow-2xl">
                                 <div className="text-center mb-6">
                                     <div className="w-16 h-16 bg-indigo-50 text-primary rounded-full flex items-center justify-center mx-auto mb-4">
-                                        <i className="fa-solid fa-key text-3xl"></i>
+                                        <i className="fa-solid fa-user-shield text-3xl"></i>
                                     </div>
-                                    <h3 className="text-xl font-bold text-gray-950">Pemulihan Hak Akses Admin</h3>
-                                    <p className="text-sm text-gray-500 mt-1">Masukkan Kunci Master untuk mendaftarkan perangkat Anda saat ini sebagai Pemilik Resmi Portofolio.</p>
+                                    <h3 className="text-xl font-bold text-gray-950">Secure Admin Sign In</h3>
+                                    <p className="text-sm text-gray-500 mt-1">Gunakan Email dan Password Admin Anda yang telah didaftarkan di Firebase console.</p>
                                 </div>
                                 
-                                <form onSubmit={handleClaimOwnership} className="space-y-4">
+                                <form onSubmit={handleAdminLogin} className="space-y-4">
                                     <div>
+                                        <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Email Admin</label>
+                                        <input 
+                                            type="email"
+                                            placeholder="admin@email.com"
+                                            className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary focus:outline-none"
+                                            value={adminEmail}
+                                            onChange={(e) => setAdminEmail(e.target.value)}
+                                            required
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Password</label>
                                         <input 
                                             type="password"
-                                            placeholder="Masukkan Kunci Master Pemulihan"
-                                            className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary focus:outline-none text-center tracking-widest"
-                                            value={claimInput}
-                                            onChange={(e) => setClaimInput(e.target.value)}
+                                            placeholder="••••••••"
+                                            className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary focus:outline-none"
+                                            value={adminPassword}
+                                            onChange={(e) => setAdminPassword(e.target.value)}
                                             required
-                                            autoFocus
                                         />
                                     </div>
 
-                                    {claimStatus.error && (
+                                    {loginStatus.error && (
                                         <div className="text-red-500 text-xs font-medium bg-red-50 p-3 rounded-lg border border-red-200 text-left space-y-1">
-                                            <p className="font-bold"><i className="fa-solid fa-circle-exclamation mr-1"></i> Gagal Memproses:</p>
-                                            <p className="whitespace-pre-line text-[11px] leading-relaxed">{claimStatus.error}</p>
+                                            <p className="font-bold"><i className="fa-solid fa-circle-exclamation mr-1"></i> Gagal Sign In:</p>
+                                            <p className="whitespace-pre-line text-[11px] leading-relaxed">{loginStatus.error}</p>
                                         </div>
                                     )}
-                                    {claimStatus.success && (
+                                    {loginStatus.success && (
                                         <p className="text-green-600 text-xs text-center font-medium bg-green-50 p-2 rounded-lg border border-green-200 animate-pulse">
-                                            <i className="fa-solid fa-circle-check mr-1"></i> {claimStatus.success}
+                                            <i className="fa-solid fa-circle-check mr-1"></i> {loginStatus.success}
                                         </p>
                                     )}
 
-                                    <div className="flex gap-3">
+                                    <div className="flex gap-3 pt-2">
                                         <button 
                                             type="submit"
-                                            className="flex-grow bg-primary hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition"
+                                            className="flex-grow bg-primary hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition shadow"
                                         >
-                                            Klaim Pemilik
+                                            Sign In
                                         </button>
                                         <button 
                                             type="button"
-                                            onClick={() => { setShowClaimModal(false); setClaimInput(''); setClaimStatus({error:'', success:''}); }}
+                                            onClick={() => { setShowLoginModal(false); setAdminEmail(''); setAdminPassword(''); setLoginStatus({error:'', success:''}); }}
                                             className="px-5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 rounded-xl transition"
                                         >
                                             Batal
@@ -504,7 +511,7 @@
         // --- TAMPILAN PUBLIK: HOME (Daftar Produk) ---
         function PublicHome({ products, onSelectProduct, formatRupiah }) {
             return (
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 animate-fadeIn">
                     <div className="text-center mb-12">
                         <h1 className="text-3xl md:text-5xl font-extrabold text-gray-900 mb-4">Solusi Web App <span className="text-primary">Sekali Klik</span></h1>
                         <p className="text-lg text-gray-600 max-w-2xl mx-auto">Kami menyediakan berbagai aplikasi web praktis berbasis single-file HTML. Ringan, cepat, dan siap pakai tanpa perlu setting server yang rumit.</p>
@@ -517,7 +524,7 @@
                             {products.map(product => (
                                 <div key={product.id} className="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-100 hover:shadow-xl transition duration-300 flex flex-col">
                                     <div className="h-48 bg-gray-100 relative group overflow-hidden">
-                                        {/* Mockup Thumbnail Cepat */}
+                                        {/* Mockup Thumbnail */}
                                         <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-indigo-100 to-blue-50 text-indigo-300">
                                             <i className="fa-solid fa-laptop-code text-6xl"></i>
                                         </div>
@@ -551,19 +558,19 @@
             const waLink = `https://wa.me/${waNumber}?text=${waMessage}`;
 
             return (
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-                    <button onClick={onBack} className="text-gray-500 hover:text-primary mb-6 flex items-center">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 animate-fadeIn">
+                    <button onClick={onBack} className="text-gray-500 hover:text-primary mb-6 flex items-center font-medium">
                         <i className="fa-solid fa-arrow-left mr-2"></i> Kembali ke Katalog
                     </button>
 
                     <div className="bg-white rounded-xl shadow-xl overflow-hidden flex flex-col lg:flex-row border border-gray-100 h-[80vh]">
-                        {/* Area Info (Desktop Kiri, Mobile Atas) */}
+                        {/* Area Info */}
                         <div className="w-full lg:w-1/3 p-6 lg:p-8 bg-gray-50 border-b lg:border-b-0 lg:border-r border-gray-200 flex flex-col overflow-y-auto">
                             <h2 className="text-2xl lg:text-3xl font-bold text-gray-900 mb-2">{product.title}</h2>
                             <div className="text-2xl font-black text-secondary mb-6">{formatRupiah(product.price)}</div>
                             
                             <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-2">Deskripsi Produk</h4>
-                            <p className="text-gray-700 mb-8 whitespace-pre-wrap flex-grow">{product.description}</p>
+                            <p className="text-gray-700 mb-8 whitespace-pre-wrap flex-grow leading-relaxed">{product.description}</p>
                             
                             <div className="mt-auto pt-6">
                                 <a href={waLink} target="_blank" rel="noopener noreferrer" className="w-full block text-center bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition duration-200 flex items-center justify-center">
@@ -575,7 +582,7 @@
                             </div>
                         </div>
                         
-                        {/* Area Demo Iframe (Desktop Kanan, Mobile Bawah) */}
+                        {/* Area Demo Iframe */}
                         <div className="w-full lg:w-2/3 h-[50vh] lg:h-full bg-white relative">
                             <div className="absolute top-0 left-0 right-0 bg-gray-800 text-gray-300 text-xs py-2 px-4 flex justify-between items-center z-10">
                                 <span><i className="fa-solid fa-desktop mr-2"></i> Live Preview</span>
@@ -596,12 +603,12 @@
         // --- TAMPILAN PUBLIK: PROFIL / CV ---
         function ProfileView({ profile }) {
             return (
-                <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+                <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12 animate-fadeIn">
                     <div className="bg-white shadow-xl rounded-2xl overflow-hidden border border-gray-100">
                         <div className="bg-primary h-32 md:h-48"></div>
                         <div className="px-6 md:px-12 pb-10 flex flex-col items-center -mt-16 md:-mt-24">
                             <div className="w-32 h-32 md:w-48 md:h-48 bg-white rounded-full p-2 shadow-lg mb-6 flex items-center justify-center text-primary bg-gray-50 border-4 border-white">
-                                <i className="fa-solid fa-user-astronaut text-6xl md:text-8xl"></i>
+                                <i className="fa-solid fa-user-astronaut text-6xl md:text-8xl animate-pulse"></i>
                             </div>
                             <h1 className="text-3xl md:text-4xl font-bold text-gray-900 text-center">{profile.name}</h1>
                             <p className="text-lg md:text-xl text-primary font-medium mt-2">{profile.title}</p>
@@ -689,22 +696,22 @@
             return (
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
                     {/* Header Admin */}
-                    <div className="flex flex-col md:flex-row justify-between items-center mb-6 bg-dark text-white p-4 rounded-xl shadow-lg">
+                    <div className="flex flex-col md:flex-row justify-between items-center mb-6 bg-dark text-white p-4 rounded-xl shadow-lg animate-fadeIn">
                         <div className="flex items-center mb-4 md:mb-0">
-                            <i className="fa-solid fa-gear text-2xl mr-3 text-primary"></i>
+                            <i className="fa-solid fa-user-shield text-2xl mr-3 text-primary"></i>
                             <div>
                                 <h2 className="text-xl font-bold">Panel Administrasi (Cloud)</h2>
-                                <p className="text-xs text-green-400"><i className="fa-solid fa-wifi mr-1"></i> Data tersimpan permanen di Firebase</p>
+                                <p className="text-xs text-green-400"><i className="fa-solid fa-lock-open mr-1"></i> Terhubung secara aman sebagai Pengelola Resmi</p>
                             </div>
                         </div>
                         <div className="flex gap-2">
-                            <button onClick={() => setActiveTab('products')} className={`px-4 py-2 rounded-lg text-sm font-medium ${activeTab === 'products' ? 'bg-primary' : 'bg-gray-700 hover:bg-gray-600'}`}>
+                            <button onClick={() => setActiveTab('products')} className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'products' ? 'bg-primary' : 'bg-gray-700 hover:bg-gray-600'}`}>
                                 Kelola Produk
                             </button>
-                            <button onClick={() => setActiveTab('profile')} className={`px-4 py-2 rounded-lg text-sm font-medium ${activeTab === 'profile' ? 'bg-primary' : 'bg-gray-700 hover:bg-gray-600'}`}>
+                            <button onClick={() => setActiveTab('profile')} className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'profile' ? 'bg-primary' : 'bg-gray-700 hover:bg-gray-600'}`}>
                                 Kelola Profil
                             </button>
-                            <button onClick={onLogout} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium ml-2">
+                            <button onClick={onLogout} className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium ml-2 transition">
                                 <i className="fa-solid fa-right-from-bracket"></i> Keluar
                             </button>
                         </div>
@@ -791,7 +798,7 @@
                         </div>
                     )}
 
-                    {/* Editor Produk HTML (Split Screen) */}
+                    {/* Editor Produk HTML */}
                     {editingProduct && (
                         <div className="bg-white rounded-xl shadow-xl border border-gray-200 flex flex-col h-[85vh] animate-fadeIn">
                             <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl">
@@ -804,11 +811,9 @@
                                 </div>
                             </div>
                             
-                            {/* Editor Area (Responsive Layout) */}
                             <div className="flex-grow flex flex-col lg:flex-row overflow-hidden">
-                                {/* Kiri: Pengaturan & Editor Kode */}
+                                {/* Editor Kiri */}
                                 <div className="w-full lg:w-1/2 flex flex-col border-r border-gray-200 h-full">
-                                    {/* Form Info Produk */}
                                     <div className="p-4 border-b bg-white space-y-3 shrink-0">
                                         <input 
                                             type="text" placeholder="Judul Aplikasi" 
@@ -831,7 +836,6 @@
                                             />
                                         </div>
                                     </div>
-                                    {/* Area Teks HTML */}
                                     <div className="flex-grow flex flex-col relative bg-dark">
                                         <div className="bg-gray-800 text-gray-400 text-xs py-1 px-3 border-b border-gray-700 flex justify-between">
                                             <span>index.html (Paste kode aplikasi Anda di sini)</span>
@@ -845,7 +849,7 @@
                                     </div>
                                 </div>
                                 
-                                {/* Kanan: Live Preview */}
+                                {/* Preview Kanan */}
                                 <div className="w-full lg:w-1/2 h-[50vh] lg:h-full bg-white relative flex flex-col">
                                     <div className="bg-gray-100 text-gray-600 text-xs py-2 px-3 border-b flex justify-between items-center shadow-sm shrink-0">
                                         <span className="font-bold"><i className="fa-solid fa-eye mr-1"></i> Live Preview</span>
