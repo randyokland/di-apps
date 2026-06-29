@@ -53,7 +53,15 @@
         // --- 2. PASTE CONFIG FIREBASE ANDA DI SINI UNTUK DEPLOY MANDIRI ---
         // Jika Anda mempublish ke GitHub Pages / Vercel, ganti null dengan config dari konsol Firebase Anda:
         // const MY_FIREBASE_CONFIG = { apiKey: "...", authDomain: "...", projectId: "...", ... };
-        const MY_FIREBASE_CONFIG = null;
+        const firebaseConfig = {
+              apiKey: "AIzaSyC7_kfqIm8OTzwqgnCzFSpfjYMETFtwDEU",
+              authDomain: "difam-5c124.firebaseapp.com",
+              projectId: "difam-5c124",
+              storageBucket: "difam-5c124.firebasestorage.app",
+              messagingSenderId: "41833181587",
+              appId: "1:41833181587:web:204d392f58d15d3181f866"
+            };
+
 
         // --- DATA AWAL SEBAGAI FALLBACK (Jika Cloud Kosong) ---
         const initialProfile = {
